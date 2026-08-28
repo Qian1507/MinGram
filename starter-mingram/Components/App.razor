@@ -11,9 +11,11 @@
 </head>
 <body>
     @* Routes avgör vilken .razor-sida som visas baserat på URL:en *@
-    <Routes />
-
+    <Routes /> 
+    
     @* Blazors JavaScript — krävs för att interaktiviteten ska fungera *@
-    <script src="_framework/blazor.web.js"></script>
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    @*<script src="_framework/blazor.web.js"></script> *@
+    
 </body>
 </html>

@@ -16,6 +16,12 @@
    men Blazor håller en live-anslutning öppen till servern istället för att rendera en gång. *@
 @rendermode InteractiveServer
 
+
+<button @onclick="TestClick">TEST</button>
+
+<p>@testMessage</p>
+
+
 <h2>Bilder</h2>
 
 @if (laddar)
@@ -33,14 +39,14 @@ else
         @foreach (var bild in bilder)
         {
             <div class="bildkort">
-                <img src="@bild.TidsbegransadUrl" alt="@bild.Caption" />
+                <img src="@bild.Url" alt="@bild.Caption" />
                 <div class="bildinfo">
                     <p class="caption">@bild.Caption</p>
                     <p class="taggar">
                         @string.Join(" · ", bild.Taggar.Select(t => $"#{t}"))
                     </p>
                     @* @onclick = onClick i React. Lambda med () => gör att vi kan skicka med argument. *@
-                    <button class="raderaknapp" @onclick="() => RaderaBild(bild.Namn)">
+                    <button class="raderaknapp" @onclick="() => RaderaBild(bild.Id)">
                         Ta bort
                     </button>
                 </div>
@@ -79,6 +85,15 @@ else
 </div>
 
 @code {
+
+
+    private string testMessage = "";
+
+    private void TestClick()
+    {
+        testMessage = "CLICK FUNGERAR!";
+    }
+    
     private List<Bild> bilder    = new();
     private bool       laddar    = true;
     private string     caption   = "";
@@ -100,22 +115,31 @@ else
         // TODO: Anropa GET /bilder på ditt API och fyll listan `bilder`
         // Tips: HttpClientFactory.CreateClient("MinGramApi") ger dig en konfigurerad HttpClient
         // Tips: GetFromJsonAsync<List<Bild>>("/bilder") deserialiserar JSON åt dig automatiskt
-        await Task.CompletedTask; // ta bort den här raden när du lägger in ditt API-anrop
+       // await Task.CompletedTask; // ta bort den här raden när du lägger in ditt API-anrop
 
         // DEMO: en exempelbild så du ser hur galleriet renderas.
         // När du implementerar GET /bilder ovan ersätts det här av riktiga bilder från API:t.
-        bilder =
-        [
-            new(
-                Namn:            "demo.jpg",
-                Caption:         "Demobild — implementera GET /bilder för att hämta riktiga",
-                Taggar:          ["demo", "placeholder"],
-                TidsbegransadUrl: "https://placehold.co/400x300?text=MinGram+Demo"
-            )
-        ];
+        try
+        {
+            var client = HttpClientFactory.CreateClient("MinGramApi");
 
-        laddar = false;
-    }
+            bilder = await client.GetFromJsonAsync<List<Bild>>("/bilder")
+                    ?? new List<Bild>();
+
+            felmeddelande = "";
+        }
+        catch (Exception ex)
+        {
+            felmeddelande = $"Kunde inte hämta bilder: {ex.Message}";
+            bilder = new List<Bild>();
+        }
+        finally
+        {
+            laddar = false;
+        }
+        
+
+        }
 
     private void FilVald(InputFileChangeEventArgs e)
     {
@@ -133,23 +157,102 @@ else
         // Tips: valdFil.OpenReadStream() ger dig filströmmen
         // Tips: Anropa HamtaBilder() efteråt så uppdateras galleriet
 
-        felmeddelande = "⚠️ Metoden är inte implementerad än — implementera POST /bilder";
+        //felmeddelande = "⚠️ Metoden är inte implementerad än — implementera POST /bilder";
+        try
+        {
+            var client =
+                HttpClientFactory.CreateClient("MinGramApi");
+
+            using var content =
+                new MultipartFormDataContent();
+
+            await using var stream =
+                valdFil.OpenReadStream(
+                    maxAllowedSize: 10 * 1024 * 1024);
+
+            using var fileContent =
+                new StreamContent(stream);
+
+            fileContent.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    valdFil.ContentType);
+
+            content.Add(
+                fileContent,
+                "file",
+                valdFil.Name);
+
+            content.Add(
+                new StringContent(caption ?? ""),
+                "caption");
+
+            content.Add(
+                new StringContent(taggar ?? ""),
+                "taggar");
+
+            var response =
+                await client.PostAsync("/bilder", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                valdFil = null;
+                caption = "";
+                taggar = "";
+                felmeddelande = "";
+
+                await HamtaBilder();
+            }
+            else
+            {
+                felmeddelande =
+                    $"Uppladdningen misslyckades: " +
+                    $"{(int)response.StatusCode} " +
+                    $"{response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            felmeddelande =
+                $"Fel vid uppladdning: {ex.Message}";
+        }
     }
 
-    private async Task RaderaBild(string namn)
+    private async Task RaderaBild(int id)
     {
-        // TODO: Anropa DELETE /bilder/{namn} på ditt API
+        // TODO: Anropa DELETE /bilder/{id} på ditt API
         // Tips: Anropa HamtaBilder() efteråt så försvinner bilden från listan
 
-        felmeddelande = "⚠️ Metoden är inte implementerad än — implementera DELETE /bilder/{namn}";
+        //felmeddelande = "⚠️ Metoden är inte implementerad än — implementera DELETE /bilder/{id}";
+        try
+        {
+            var client = HttpClientFactory.CreateClient("MinGramApi");
+
+            var response = await client.DeleteAsync($"/bilder/{id}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                felmeddelande = "";
+                await HamtaBilder();
+            }
+            else
+            {
+                felmeddelande =
+                    $"Kunde inte ta bort bilden: {(int)response.StatusCode} {response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            felmeddelande = $"Fel vid DELETE: {ex.Message}";
+        }
     }
 
     // Datamodell som matchar JSON-svaret från MinGram-API:t
     private record Bild(
+        int Id,
         string Namn,
         string Caption,
         List<string> Taggar,
-        string TidsbegransadUrl
+        string Url
     );
 }
 

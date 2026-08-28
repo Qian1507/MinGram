@@ -4,5 +4,8 @@
     <!-- Blazor Web App = server-side Blazor + möjlighet till WebAssembly senare -->
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
   </PropertyGroup>
 </Project>

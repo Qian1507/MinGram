@@ -14,10 +14,28 @@
 //
 // Bilder lagras som URL:er — ladda upp till Azure Blob Storage och skicka URL:en hit.
 
+using Azure.Storage.Blobs;  
+using Azure.Storage.Sas;
+using Microsoft.AspNetCore.Mvc;
 using System.Text;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var storageConnectionString =
+    builder.Configuration["Storage:ConnectionString"]
+    ?? throw new InvalidOperationException(
+        "Storage:ConnectionString saknas");
+
+var containerName =
+    builder.Configuration["Storage:ContainerName"]
+    ?? "bilder";
+
+var blobServiceClient =
+    new BlobServiceClient(storageConnectionString);
+
+var blobContainerClient =
+    blobServiceClient.GetBlobContainerClient(containerName);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -75,15 +93,54 @@ app.MapGet("/bilder/{id:int}", (int id) =>
 
 // Fotograf och Admin får ladda upp bilder
 // Skicka URL:en till bilden — lagra filen i Azure Blob Storage och använd den URL:en här
-app.MapPost("/bilder", (NyBild ny, HttpRequest req) =>
+
+app.MapPost("/bilder", async (
+    HttpRequest req,
+    [FromForm] BildUploadRequest input) =>
 {
-    if (!HarBehorighet(HamtaRoll(req), "Fotograf")) return Results.StatusCode(403);
-    var b = new Bild(nastaBildId++, ny.Namn, ny.Caption, ny.Taggar ?? [], ny.Url);
-    bilder.Add(b);
-    return Results.Created($"/bilder/{b.Id}", b);
+    if (!HarBehorighet(HamtaRoll(req), "Fotograf"))
+        return Results.StatusCode(403);
+
+    if (input.File is null || input.File.Length == 0)
+        return Results.BadRequest("Ingen bild valdes.");
+
+    var taggar = input.Taggar
+        .Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(t => t.Trim())
+        .ToList();
+
+    var blobName =
+        $"{Guid.NewGuid()}-{Path.GetFileName(input.File.FileName)}";
+
+    var blobClient =
+        blobContainerClient.GetBlobClient(blobName);
+
+    await using var stream = input.File.OpenReadStream();
+
+    await blobClient.UploadAsync(
+        stream,
+        overwrite: true);
+
+    var sasUri = blobClient.GenerateSasUri(
+        BlobSasPermissions.Read,
+        DateTimeOffset.UtcNow.AddHours(1));
+
+    var bild = new Bild(
+        nastaBildId++,
+        blobName,
+        input.Caption,
+        taggar,
+        sasUri.ToString());
+
+    bilder.Add(bild);
+
+    return Results.Created(
+        $"/bilder/{bild.Id}",
+        bild);
 })
 .WithName("LaddaUppBild")
-.WithSummary("Lägg till bild — kräver Fotograf eller Admin");
+.WithSummary("Lägg till bild — kräver Fotograf eller Admin")
+.DisableAntiforgery(); 
 
 // Fotograf och Admin får uppdatera caption och taggar
 app.MapPut("/bilder/{id:int}", (int id, BildUpdate update, HttpRequest req) =>
@@ -102,12 +159,23 @@ app.MapPut("/bilder/{id:int}", (int id, BildUpdate update, HttpRequest req) =>
 .WithSummary("Uppdatera bild — kräver Fotograf eller Admin");
 
 // Bara Admin får ta bort bilder — testa med Postman som Betraktare för att se 403
-app.MapDelete("/bilder/{id:int}", (int id, HttpRequest req) =>
+app.MapDelete("/bilder/{id:int}", async (int id, HttpRequest req) =>
 {
-    if (!HarBehorighet(HamtaRoll(req), "Admin")) return Results.StatusCode(403);
-    var b = bilder.FirstOrDefault(b => b.Id == id);
-    if (b is null) return Results.NotFound();
-    bilder.Remove(b);
+    if (!HarBehorighet(HamtaRoll(req), "Admin"))
+        return Results.StatusCode(403);
+
+    var bild = bilder.FirstOrDefault(b => b.Id == id);
+
+    if (bild is null)
+        return Results.NotFound();
+
+    var blobClient =
+        blobContainerClient.GetBlobClient(bild.Namn);
+
+    await blobClient.DeleteIfExistsAsync();
+
+    bilder.Remove(bild);
+
     return Results.NoContent();
 })
 .WithName("RaderaBild")
@@ -159,3 +227,10 @@ record Bild(int Id, string Namn, string Caption, List<string> Taggar, string Url
 
 record NyBild(string Namn, string Caption, List<string>? Taggar, string Url);
 record BildUpdate(string? Caption, List<string>? Taggar);
+
+public class BildUploadRequest
+{
+    public IFormFile File { get; set; } = default!;
+    public string Caption { get; set; } = "";
+    public string Taggar { get; set; } = "";
+}

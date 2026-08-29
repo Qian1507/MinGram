@@ -19,21 +19,36 @@ using Azure.Storage.Sas;
 using Microsoft.AspNetCore.Mvc;
 using System.Text;
 using System.Text.Json;
+using Azure.Identity;
+using Azure.Storage.Blobs.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var storageConnectionString =
-    builder.Configuration["Storage:ConnectionString"]
+// Hämta namnet på Storage Account från konfigurationen.
+// I Azure sätts detta som en App Setting, t.ex. Storage__AccountName.
+var storageAccountName =
+    builder.Configuration["Storage:AccountName"]
     ?? throw new InvalidOperationException(
-        "Storage:ConnectionString saknas");
+        "Storage:AccountName saknas");
 
+// Hämta containerns namn.
+// Om inget värde finns används "bilder" som standard.
 var containerName =
     builder.Configuration["Storage:ContainerName"]
     ?? "bilder";
 
+// Skapa en BlobServiceClient med DefaultAzureCredential.
+// I Azure använder detta App Service-resursens Managed Identity,
+// vilket innebär att vi inte behöver lagra någon Storage Account-nyckel
+// eller connection string i applikationen.
 var blobServiceClient =
-    new BlobServiceClient(storageConnectionString);
+    new BlobServiceClient(
+        new Uri($"https://{storageAccountName}.blob.core.windows.net"),
+        new DefaultAzureCredential());
 
+// Hämta klienten för den container där bilderna lagras.
+// App Service har rollen "Storage Blob Data Contributor"
+// och får därför läsa, skapa och radera blobbar via Azure RBAC.
 var blobContainerClient =
     blobServiceClient.GetBlobContainerClient(containerName);
 
@@ -93,6 +108,7 @@ app.MapGet("/bilder/{id:int}", (int id) =>
 
 // Fotograf och Admin får ladda upp bilder
 // Skicka URL:en till bilden — lagra filen i Azure Blob Storage och använd den URL:en här
+//Bildfilen lagras i Azure Blob Storage och metadata sparas i minnet.
 
 app.MapPost("/bilder", async (
     HttpRequest req,
@@ -121,9 +137,47 @@ app.MapPost("/bilder", async (
         stream,
         overwrite: true);
 
-    var sasUri = blobClient.GenerateSasUri(
-        BlobSasPermissions.Read,
-        DateTimeOffset.UtcNow.AddHours(1));
+    //var sasUri = blobClient.GenerateSasUri(
+    //    BlobSasPermissions.Read,
+    //    DateTimeOffset.UtcNow.AddHours(1));
+
+    // Skapa en User Delegation Key med App Service-resursens Managed Identity.
+    // Detta gör att SAS-token kan skapas utan Storage Account Key.
+    var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
+    var expiresOn = DateTimeOffset.UtcNow.AddHours(1);
+
+    var delegationOptions =
+     new BlobGetUserDelegationKeyOptions(expiresOn)
+     {
+         StartsOn = startsOn
+     };
+
+    var userDelegationKeyResponse =
+        await blobServiceClient.GetUserDelegationKeyAsync(
+            delegationOptions);
+
+    var userDelegationKey = userDelegationKeyResponse.Value;
+
+    // Skapa en tidsbegränsad SAS för den uppladdade bilden.
+    var sasBuilder = new BlobSasBuilder
+    {
+        BlobContainerName = containerName,
+        BlobName = blobName,
+        Resource = "b",
+        StartsOn = startsOn,
+        ExpiresOn = expiresOn
+    };
+
+    sasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+    var sasUri = new UriBuilder(blobClient.Uri)
+    {
+        Query = sasBuilder
+            .ToSasQueryParameters(
+                userDelegationKey,
+                storageAccountName)
+            .ToString()
+    }.Uri;
 
     var bild = new Bild(
         nastaBildId++,
